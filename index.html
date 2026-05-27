@@ -460,7 +460,7 @@ function RetailEngineTab(){
 
   var filtMos=useMemo(function(){
     var mos=selYear==='All'?commonMonths:commonMonths.filter(function(m){var p=m.match(/(\w+)'(\d+)/);return p&&'20'+p[2]===selYear;});
-    return mos.slice(0,24);
+    return mos.slice(0,36);
   },[selYear,commonMonths]);
 
   var moTotalWS=useMemo(function(){
