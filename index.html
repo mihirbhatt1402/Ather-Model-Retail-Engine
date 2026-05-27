@@ -583,6 +583,54 @@ function RetailEngineTab(){
     };
   },[accRows,predictions,allModels,filtMos,wsAgg]);
 
+  function exportPredCSV(){
+    var mods=selModel==='All'?allModels:[selModel];
+    var predStates=selState==='All'?allStates:[selState];
+    var header=['State','Model'].concat(filtMos.slice()).concat(['Total']);
+    var csvRows=[header];
+    predStates.forEach(function(st){
+      var stPredTot=filtMos.reduce(function(s,mo){
+        return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+      },0);
+      if(!stPredTot)return;
+      var stRow=[st,'State Total'];
+      filtMos.forEach(function(mo){
+        stRow.push(mods.reduce(function(s,model){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0));
+      });
+      stRow.push(stPredTot);
+      csvRows.push(stRow);
+      mods.forEach(function(model){
+        var mTot=filtMos.reduce(function(s,mo){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+        if(!mTot)return;
+        var mRow=[st,model];
+        filtMos.forEach(function(mo){mRow.push((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);});
+        mRow.push(mTot);
+        csvRows.push(mRow);
+      });
+    });
+    var grandRow=['Grand Total',''];
+    var grandTot=0;
+    filtMos.forEach(function(mo){
+      var v=predStates.reduce(function(s,st){return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);},0);
+      grandRow.push(v); grandTot+=v;
+    });
+    grandRow.push(grandTot);
+    csvRows.push(grandRow);
+    var csv=csvRows.map(function(row){
+      return row.map(function(cell){
+        var s=String(cell);
+        if(s.indexOf(',')!==-1||s.indexOf('"')!==-1)s='"'+s.replace(/"/g,'""')+'"';
+        return s;
+      }).join(',');
+    }).join('\r\n');
+    var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download='Prediction_Grid_'+(selState==='All'?'PanIndia':selState.replace(/\s+/g,'_'))+'_'+new Date().toISOString().slice(0,10)+'.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return ce('div',{className:'fade-up'},
 
     ce('div',{className:'card',style:{padding:'12px 16px'}},
@@ -644,8 +692,11 @@ function RetailEngineTab(){
     ),
 
     filtMos.length>0&&Object.keys(allStatePreds).length>0&&ce('div',{className:'card'},
-      ce('div',{className:'card-title'},'Prediction Grid — State × Model × Month · Pan India'),
-      ce('div',{style:{fontSize:11,color:'#94a3b8',marginBottom:10}},
+      ce('div',{className:'card-hdr'},
+        ce('div',{className:'card-title',style:{marginBottom:0}},'Prediction Grid — State × Model × Month · Pan India'),
+        ce('button',{onClick:exportPredCSV,style:{marginLeft:'auto',padding:'6px 16px',border:'1.5px solid #2563eb',borderRadius:6,fontSize:11,fontWeight:600,background:'#eff6ff',color:'#2563eb',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',flexShrink:0}},'⬇ Export CSV')
+      ),
+      ce('div',{style:{fontSize:11,color:'#94a3b8',margin:'8px 0 10px'}},
         'Click any state row to expand/collapse model-level predictions. State total = sum of all model predictions for that state.'),
       ce('div',{className:'grid-wrap'},
         ce('table',{className:'dg'},
