@@ -433,6 +433,17 @@ function RetailEngineTab(){
     return o;
   },[]);
 
+  /* state → month → model → generation (for blended base per-state organic share) */
+  var stOrgAgg=useMemo(function(){
+    var o={};
+    orgRows.forEach(function(r){
+      if(!o[r.state])o[r.state]={};
+      if(!o[r.state][r.month])o[r.state][r.month]={};
+      o[r.state][r.month][r.model]=(o[r.state][r.month][r.model]||0)+r.generation;
+    });
+    return o;
+  },[]);
+
   var allStates=useMemo(function(){return Object.keys(vhnAgg).filter(function(s){return s!=='__ALL__';}).sort();},[vhnAgg]);
   var allModels=useMemo(function(){return Object.keys(wsAgg).sort();},[wsAgg]);
 
@@ -464,24 +475,50 @@ function RetailEngineTab(){
     var stateRetail=(vhnAgg[st]||{})[mo]||0;
     var modelWS=(wsAgg[model]||{})[mo]||0;
     var totalWS=moTotalWS[mo]||1;
-    var base=stateRetail*(modelWS/totalWS);
+    var wsShare=modelWS/totalWS;
+
+    /* Blended share: 60% pan-India WS + 40% state-specific organic mix */
+    var stMoOrg=(stOrgAgg[st]&&stOrgAgg[st][mo])?stOrgAgg[st][mo]:{};
+    var stMoOrgTotal=Object.values(stMoOrg).reduce(function(s,v){return s+v;},0);
+    var stOrgShare=stMoOrgTotal>0?((stMoOrg[model]||0)/stMoOrgTotal):wsShare;
+    var blendedShare=0.60*wsShare+0.40*stOrgShare;
+
+    var base=stateRetail*blendedShare;
     if(!base)return 0;
+
+    /* 6-month lookback (more stable than 3-month) */
     var moIdx=mosSorted.indexOf(mo);
-    var prev3=moIdx>=3?mosSorted.slice(moIdx-3,moIdx):mosSorted.slice(0,Math.max(0,moIdx));
-    var avgSR=prev3.length?prev3.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/prev3.length:stateRetail;
-    var stateSig=clamp01(avgSR>0?(stateRetail/avgSR-0.5)/1.5:0.5);
+    var prev6=mosSorted.slice(Math.max(0,moIdx-6),moIdx);
+
+    /* Signal formula: clamp01(0.5 + 0.5*(ratio-1))
+       — perfectly centred at 0.5 when ratio=1 (no change)
+       — rises to 1.0 at ratio=2, falls to 0.0 at ratio=0              */
+    function sig(now,avg){return clamp01(0.5+0.5*(avg>0?now/avg-1:0));}
+
+    /* State retail momentum */
+    var avgSR=prev6.length?prev6.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/prev6.length:stateRetail;
+    var stateSig=sig(stateRetail,avgSR);
+
+    /* Organic demand */
     var genNow=(orgAgg[mo]||{})[model]||0;
-    var avgGen=prev3.length?prev3.reduce(function(s,m){return s+((orgAgg[m]||{})[model]||0);},0)/prev3.length:genNow;
-    var orgSig=clamp01(avgGen>0?(genNow/avgGen-0.5)/1.5:0.5);
-    var avgWS=prev3.length?prev3.reduce(function(s,m){return s+((wsAgg[model]||{})[m]||0);},0)/prev3.length:modelWS;
-    var wsSig=clamp01(avgWS>0?(modelWS/avgWS-0.5)/1.5:0.5);
+    var avgGen=prev6.length?prev6.reduce(function(s,m){return s+((orgAgg[m]||{})[model]||0);},0)/prev6.length:genNow;
+    var orgSig=sig(genNow,avgGen);
+
+    /* Wholesale trend */
+    var avgWS=prev6.length?prev6.reduce(function(s,m){return s+((wsAgg[model]||{})[m]||0);},0)/prev6.length:modelWS;
+    var wsSig=sig(modelWS,avgWS);
+
+    /* Seasonality: same-calendar-month avg vs overall avg */
     var moNum=MN.indexOf(mo.split("'")[0]);
     var sameHist=mosSorted.filter(function(m){return MN.indexOf(m.split("'")[0])===moNum&&m!==mo;});
     var avgSame=sameHist.length?sameHist.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/sameHist.length:stateRetail;
     var ovAvg=mosSorted.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/Math.max(mosSorted.length,1);
-    var seasSig=clamp01(ovAvg>0?(avgSame/ovAvg-0.6)/1.2:0.5);
-    var combined=0.40*stateSig+0.30*orgSig+0.20*wsSig+0.10*seasSig;
-    var discount=0.88+combined*0.09;
+    var seasSig=sig(avgSame,ovAvg);
+
+    /* Weights: 40% State · 25% Organic · 25% WS · 10% Seasonality
+       Discount centred at 1.0, range [0.95, 1.05] → max ±5% from base */
+    var combined=0.40*stateSig+0.25*orgSig+0.25*wsSig+0.10*seasSig;
+    var discount=0.95+combined*0.10;
     return Math.max(0,Math.round(base*discount));
   }
 
@@ -495,7 +532,7 @@ function RetailEngineTab(){
       filtMos.forEach(function(mo){out[model][mo]=predictCell(st,model,mo);});
     });
     return out;
-  },[selState,selModel,filtMos,vhnAgg,wsAgg,moTotalWS,allModels,mosSorted,orgAgg]);
+  },[selState,selModel,filtMos,vhnAgg,wsAgg,moTotalWS,allModels,mosSorted,orgAgg,stOrgAgg]);
 
   var statePreds=useMemo(function(){
     if(selModel==='All'||!filtMos.length)return{};
@@ -505,7 +542,7 @@ function RetailEngineTab(){
       filtMos.forEach(function(mo){out[st][mo]=predictCell(st,selModel,mo);});
     });
     return out;
-  },[selModel,filtMos,allStates,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg]);
+  },[selModel,filtMos,allStates,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg,stOrgAgg]);
 
   /* all states × all models predictions for the Prediction Grid */
   var allStatePreds=useMemo(function(){
@@ -519,7 +556,7 @@ function RetailEngineTab(){
       });
     });
     return out;
-  },[allStates,allModels,filtMos,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg]);
+  },[allStates,allModels,filtMos,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg,stOrgAgg]);
 
   var accRows=useMemo(function(){
     var st=selState==='All'?'__ALL__':selState;
@@ -650,10 +687,10 @@ function RetailEngineTab(){
     ce('div',{className:'signal-row'},
       ce('span',{style:{fontWeight:600,color:'#374151'}},'Prediction Signals:'),
       ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#2563eb'}}),ce('b',null,'40%'),' State Momentum'),
-      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#16a34a'}}),ce('b',null,'30%'),' Organic Demand'),
-      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#d97706'}}),ce('b',null,'20%'),' Wholesale Trend'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#16a34a'}}),ce('b',null,'25%'),' Organic Demand'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#d97706'}}),ce('b',null,'25%'),' Wholesale Trend'),
       ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#7c3aed'}}),ce('b',null,'10%'),' Seasonality'),
-      ce('span',{style:{color:'#94a3b8',fontSize:10.5}},'| Discount: 0.88–0.97 (predicted is 3–12% below actual baseline)')
+      ce('span',{style:{color:'#94a3b8',fontSize:10.5}},'| Base: 60% WS + 40% State Organic mix · Discount: 0.95–1.05 (target ≤5% variance)')
     ),
 
     ce('div',{className:'kpi-grid'},
